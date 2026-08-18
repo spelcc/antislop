@@ -3,6 +3,7 @@ pub mod classify;
 pub mod cluster;
 pub mod discovery;
 pub mod fingerprint;
+pub mod fixes;
 pub mod lexical;
 pub mod lint;
 pub mod metadata;
@@ -26,6 +27,10 @@ pub use fingerprint::{
     Fingerprint, FingerprintEntry, FingerprintOptions, FingerprintSource, FingerprintSuite,
     build_fingerprint, build_fingerprint_suite, build_fingerprint_with_guard,
 };
+pub use fixes::{
+    ClassificationFix, ClassificationFixPattern, ClassificationStyleFix,
+    build_classification_fixes, build_style_fixes,
+};
 pub use lint::{
     LintOutcome, LintThresholds, SentenceFinding, SentenceSpan, lint_text, split_sentences,
 };
@@ -38,7 +43,7 @@ pub use profile::{
     CorpusProfile, DocumentProfile, ModelProfile, PatternStats, ProfileOptions, ProfileSlice,
     profile_documents, profile_loaded_documents,
 };
-pub use prose::clean_prose;
+pub use prose::{clean_prose, clean_prose_preserving_lines};
 pub use style::{
     StyleComparison, StyleDocumentMetrics, StyleMetricSummary, StyleProfile, build_style_profile,
     compare_style, compare_style_document, style_metrics,

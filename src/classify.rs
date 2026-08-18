@@ -1,4 +1,7 @@
 use crate::analyze::{PatternHit, analyze_text};
+use crate::fixes::{
+    ClassificationFix, ClassificationStyleFix, build_classification_fixes, build_style_fixes,
+};
 use crate::nearest::{
     CandidateClass, NearestCandidate, NearestMatch, NearestMetric, nearest_candidates,
 };
@@ -139,6 +142,8 @@ pub struct ClassificationReport {
     pub llm_logit: f64,
     pub evidence: ClassificationEvidence,
     pub llm_pattern_examples: Vec<PatternHit>,
+    pub fixes: Vec<ClassificationFix>,
+    pub style_fixes: Vec<ClassificationStyleFix>,
     pub nearest: Vec<NearestMatch>,
     pub calibration: ClassifierEvaluation,
     pub calibration_prior_llm: f64,
@@ -606,6 +611,13 @@ pub fn classify_text(
     } else {
         CandidateClass::Human
     };
+    let fixes = build_classification_fixes(text, language, &nearest.matches, candidates);
+    let style_fixes = evidence
+        .best_human_style
+        .as_ref()
+        .and_then(|human| candidates.get(&human.label))
+        .and_then(|candidate| candidate.style_profile.as_ref())
+        .map_or_else(Vec::new, |profile| build_style_fixes(text, profile));
     let llm_pattern_examples = candidates
         .get(&evidence.best_llm_signal.label)
         .map(|candidate| {
@@ -618,7 +630,7 @@ pub fn classify_text(
         })
         .unwrap_or_default();
     Ok(ClassificationReport {
-        schema_version: 1,
+        schema_version: 2,
         language,
         predicted_class,
         human_probability: round4(1.0 - llm_probability),
@@ -629,6 +641,8 @@ pub fn classify_text(
         llm_logit: round4(llm_logit),
         evidence,
         llm_pattern_examples,
+        fixes,
+        style_fixes,
         nearest: nearest.matches.into_iter().take(top).collect(),
         calibration: classifier.evaluation.clone(),
         calibration_prior_llm: classifier.prior_llm,

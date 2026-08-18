@@ -339,7 +339,7 @@ antislop classify article.mdoc \
   --ci --min-human-probability 0.70
 ```
 
-A failing gate exits with code `2`. The output lists the LLM-leaning classifier features, nearest Human references and the strongest multi-word LLM fingerprint hits to inspect first.
+A failing gate exits with code `2`. The output lists the LLM-leaning classifier features and then pinpoints source lines to rewrite. `Priority passages` include the exact sentence, merged bad phrase(s), local LLM-vs-Human signal margin, supporting LLM fingerprints, a `high`/`medium` evidence label, and a constrained rewrite instruction. Weak one-model bigrams are excluded. When the nearest Human style profile shows a defensible rhythm deviation, `Style hotspots` also identify exact source lines with short-sentence stacks. The JSON report schema v2 exposes the same data as `fixes[]` and `style_fixes[]` for automated editing loops.
 
 `classify` reports Human/LLM probabilities, holdout accuracy/AUC/Brier/ECE, the best human and LLM evidence on each axis, and each feature's contribution to the logistic score. The fitted prior is deliberately **50% Human / 50% LLM**. A result such as `Human 70%` therefore means “70% under this calibrated balanced comparison,” not “70% real-world probability that a human wrote it.”
 

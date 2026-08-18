@@ -68,6 +68,27 @@ Positive margins point toward LLM under their respective metric. The features ar
 
 The classifier JSON stores feature means/scales, weights, intercept, candidate identities and holdout evaluation. It also stores SHA-256 identities for the exact baseline, candidate fingerprints and optional style profiles. `classify` refuses a different baseline or candidate artifact instead of silently applying an obsolete calibration.
 
+## Actionable CI diagnostics
+
+`classify --ci --min-human-probability 0.70` exits with code `2` when the calibrated Human probability is below the editorial threshold. Classification report schema **v2** adds machine-readable correction evidence instead of asking a writer to infer edits from a document-level probability.
+
+`fixes[]` is built from the five strongest LLM document-signal populations and up to five Human signal populations. For each source sentence, antislop compares local multi-word fingerprint signal, keeps only sentences where the LLM-side average exceeds the Human-side average, and reports:
+
+- exact `start_line` / `end_line` and sentence text;
+- local LLM signal, Human signal and margin;
+- overlapping n-grams merged into maximal bad phrases rather than printing six adjacent trigrams;
+- supporting LLM candidate labels and aggregate signal;
+- `high` or `medium` evidence confidence;
+- an edit instruction that explicitly preserves facts, names, numbers, citations and necessary domain terminology.
+
+Single-model bigrams are deliberately excluded from actionable fixes because they are too easy to confound with topic or tokenization accidents. A bigram must recur in at least two top LLM fingerprints; a trigram-or-longer phrase may be retained with one model and is labeled `medium` unless cross-model support makes it stronger.
+
+`style_fixes[]` is narrower by design. Antislop does **not** tell a writer to add/remove arbitrary function words merely because a regression coefficient likes them. It only localizes style when the nearest Human profile shows a defensible sentence-rhythm deviation. For example, if the document has substantially fewer long sentences and a high short-sentence rate, source lines stacking multiple short sentences are reported with a suggestion to combine/subordinate related claims where editorially natural.
+
+The CLI uses a line-preserving Markdown/Markdoc cleaner for classification diagnostics. Removed frontmatter, components, code, references and plumbing are masked without changing source line count, so `L68` points to line 68 of the original source. Numeric IRZ reference links are treated as plumbing and do not become phantom one-token sentences.
+
+For automation, an editing agent should change only a small number of top-priority passages, rerun the exact classifier bundle, keep changes that improve the Human probability without damaging factual content, and repeat until the configured gate passes. The diagnostic does not estimate the probability gain of an individual edit; those effects remain empirical and must be checked by rerunning classification.
+
 ## Leakage-free French benchmark
 
 The final experiment separates candidate-signature data, classifier training data and classifier test data.
@@ -138,8 +159,8 @@ The model-side groups contain only five test documents each. One error therefore
 Using the fair 34-population candidate set and the balanced classifier, the published French Bill Gates article scores:
 
 ```text
-Human 70.3%
-LLM   29.7%
+Human 70.6%
+LLM   29.4%
 ```
 
 This result uses the classifier's 50/50 prior. It should be read as a calibrated population-comparison result, not a literal posterior probability of authorship.

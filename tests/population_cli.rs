@@ -558,7 +558,11 @@ fn classify_ci_fails_below_human_threshold_and_explains_how_to_pass() {
     );
 
     let article = dir.path().join("article.txt");
-    fs::write(&article, "It is important to note this result. In summary, here are the key considerations and essential points to consider.").unwrap();
+    fs::write(
+        &article,
+        "A concrete opening sentence.\nIt is important to note this result.\nIn summary, here are the key considerations and essential points to consider.",
+    )
+    .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_antislop"))
         .args([
             "classify",
@@ -582,5 +586,45 @@ fn classify_ci_fails_below_human_threshold_and_explains_how_to_pass() {
     assert!(stdout.contains("CI FAIL"), "{stdout}");
     assert!(stdout.contains("Human probability"), "{stdout}");
     assert!(stdout.contains("How to pass"), "{stdout}");
-    assert!(stdout.contains("LLM-specific patterns"), "{stdout}");
+    assert!(stdout.contains("Priority passages to rewrite"), "{stdout}");
+    assert!(stdout.contains("L2"), "{stdout}");
+    assert!(
+        stdout.contains("It is important to note this result."),
+        "{stdout}"
+    );
+
+    let json_output = Command::new(env!("CARGO_BIN_EXE_antislop"))
+        .args([
+            "classify",
+            article.to_str().unwrap(),
+            "--classifier",
+            classifier.to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--candidates",
+            candidates.to_str().unwrap(),
+            "--language",
+            "en",
+            "--min-human-probability",
+            "0.70",
+            "--ci",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(json_output.status.code(), Some(2));
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    let fixes = value["fixes"]
+        .as_array()
+        .expect("classification JSON exposes fixes[]");
+    assert!(!fixes.is_empty());
+    let line_two = fixes
+        .iter()
+        .find(|fix| fix["start_line"] == 2)
+        .expect("line 2 is pinpointed even when another sentence has higher priority");
+    assert!(
+        line_two["patterns"]
+            .as_array()
+            .is_some_and(|patterns| !patterns.is_empty())
+    );
 }

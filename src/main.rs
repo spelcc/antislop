@@ -327,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("--top must be positive".into());
             }
             let raw = read_text(input.as_deref())?;
-            let text = clean_prose(&raw);
+            let text = antislop::clean_prose_preserving_lines(&raw);
             if text.trim().is_empty() {
                 return Err("classify input contains no prose after cleaning".into());
             }

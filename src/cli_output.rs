@@ -126,17 +126,60 @@ pub(crate) fn print_classification_gate(report: &ClassificationReport, min_human
         );
     }
 
-    println!("\nLLM-specific patterns to inspect first:");
-    if report.llm_pattern_examples.is_empty() {
-        println!("  - no multi-word fingerprint hits; focus on the style/rank criteria above");
+    println!("\nPriority passages to rewrite:");
+    if report.fixes.is_empty() {
+        println!(
+            "  No sentence-level LLM-over-Human phrase hotspot was isolated. Focus on the document-wide style/rank criteria above."
+        );
     } else {
-        for hit in report.llm_pattern_examples.iter().take(8) {
+        for fix in report.fixes.iter().take(10) {
+            let lines = if fix.start_line == fix.end_line {
+                format!("L{}", fix.start_line)
+            } else {
+                format!("L{}-{}", fix.start_line, fix.end_line)
+            };
             println!(
-                "  - “{}” x{} | {}-gram | signal {:.4}",
-                hit.pattern, hit.count, hit.n, hit.weighted_signal
+                "\n  {}. {} | local LLM {:.4} vs Human {:.4} | margin +{:.4}",
+                fix.priority, lines, fix.llm_signal, fix.human_signal, fix.llm_signal_margin
             );
+            println!("     {}", fix.text.replace('\n', " "));
+            println!("     Bad phrases:");
+            for pattern in &fix.patterns {
+                println!(
+                    "       - [{}] “{}” x{} | {}-gram | signal {:.4} | {} top LLM fingerprint(s): {}",
+                    pattern.confidence,
+                    pattern.pattern,
+                    pattern.occurrences,
+                    pattern.n,
+                    pattern.aggregate_signal,
+                    pattern.candidate_count,
+                    pattern.candidates.join(", "),
+                );
+            }
+            println!("     Fix: {}", fix.instruction);
         }
     }
+    println!("\nStyle hotspots:");
+    if report.style_fixes.is_empty() {
+        println!(
+            "  No line-level rhythm hotspot can be justified from the nearest Human style profile; keep the document-wide style criterion as context only."
+        );
+    } else {
+        for fix in &report.style_fixes {
+            let lines = if fix.start_line == fix.end_line {
+                format!("L{}", fix.start_line)
+            } else {
+                format!("L{}-{}", fix.start_line, fix.end_line)
+            };
+            println!(
+                "\n  {}. {} | {}: document {:.4}, Human median {:.4}",
+                fix.priority, lines, fix.metric, fix.document_value, fix.human_median
+            );
+            println!("     {}", fix.text.replace('\n', " "));
+            println!("     Fix: {}", fix.instruction);
+        }
+    }
+
     println!(
         "\nNearest Human references: distance={} (#{}), signal={} (#{}), style={}.",
         report.evidence.best_human_distance.label,
