@@ -93,6 +93,12 @@ enum Command {
         language: Language,
         #[arg(long, default_value_t = 10)]
         top: usize,
+        /// Fail with exit code 2 when Human probability is below this threshold.
+        #[arg(long)]
+        min_human_probability: Option<f64>,
+        /// CI mode: defaults the Human threshold to 0.70 and prints correction guidance.
+        #[arg(long)]
+        ci: bool,
         #[arg(long)]
         json: bool,
     },
@@ -313,6 +319,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             candidates,
             language,
             top,
+            min_human_probability,
+            ci,
             json,
         } => {
             if top == 0 {
@@ -329,10 +337,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 load_candidate_manifest(&candidates, language).map_err(io::Error::other)?;
             let report = classify_text(&text, language, &baseline, &candidates, &classifier, top)
                 .map_err(io::Error::other)?;
+            let threshold = min_human_probability.or(ci.then_some(0.70));
+            if let Some(limit) = threshold
+                && !(0.0..=1.0).contains(&limit)
+            {
+                return Err("--min-human-probability must be between 0 and 1".into());
+            }
             if json {
                 print_json(&report)?;
             } else {
                 print_classification(&report);
+                if let Some(limit) = threshold {
+                    cli_output::print_classification_gate(&report, limit);
+                }
+            }
+            if threshold.is_some_and(|limit| report.human_probability < limit) {
+                std::process::exit(2);
             }
         }
         Command::Profile {

@@ -404,3 +404,183 @@ fn calibrate_then_classify_returns_empirical_human_probability() {
     assert!(!mismatch.status.success());
     assert!(String::from_utf8_lossy(&mismatch.stderr).contains("baseline"));
 }
+
+#[test]
+fn classify_ci_fails_below_human_threshold_and_explains_how_to_pass() {
+    let dir = tempdir().unwrap();
+    let baseline_dir = dir.path().join("baseline");
+    let human_dir = dir.path().join("human-candidate");
+    let llm_dir = dir.path().join("llm-candidate");
+    for path in [&baseline_dir, &human_dir, &llm_dir] {
+        fs::create_dir(path).unwrap();
+    }
+    for index in 0..6 {
+        fs::write(
+            baseline_dir.join(format!("{index}.txt")),
+            "A careful human editor describes a concrete object with varied sentences and specific observations.",
+        )
+        .unwrap();
+        fs::write(
+            human_dir.join(format!("{index}.txt")),
+            "I test the object. Then I check one awkward detail. The result changes what I do next.",
+        )
+        .unwrap();
+        fs::write(
+            llm_dir.join(format!("{index}.txt")),
+            "It is important to note this result. In summary, here are the key considerations and essential points.",
+        )
+        .unwrap();
+    }
+
+    let profile = |corpus: &std::path::Path, output: &std::path::Path| {
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_antislop"))
+                .args([
+                    "profile",
+                    corpus.to_str().unwrap(),
+                    "--language",
+                    "en",
+                    "-o",
+                    output.to_str().unwrap()
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    let baseline = dir.path().join("baseline.json");
+    profile(&baseline_dir, &baseline);
+    let files = dir.path().join("candidates");
+    fs::create_dir(&files).unwrap();
+    for (label, corpus) in [("human-editorial", &human_dir), ("model-x", &llm_dir)] {
+        let p = files.join(format!("{label}.profile.json"));
+        profile(corpus, &p);
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_antislop"))
+                .args([
+                    "fingerprint",
+                    "--target",
+                    p.to_str().unwrap(),
+                    "--baseline",
+                    baseline.to_str().unwrap(),
+                    "--min-documents",
+                    "1",
+                    "--no-wordfreq",
+                    "--label",
+                    label,
+                    "-o",
+                    files
+                        .join(format!("{label}.fingerprint.json"))
+                        .to_str()
+                        .unwrap()
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_antislop"))
+                .args([
+                    "style",
+                    "profile",
+                    corpus.to_str().unwrap(),
+                    "--language",
+                    "en",
+                    "-o",
+                    files.join(format!("{label}.style.json")).to_str().unwrap()
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let candidates = dir.path().join("candidates.json");
+    fs::write(&candidates, serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": 1, "language": "en", "candidates": [
+            {"label":"human-editorial","class":"human","fingerprint":"candidates/human-editorial.fingerprint.json","style_profile":"candidates/human-editorial.style.json"},
+            {"label":"model-x","class":"llm","fingerprint":"candidates/model-x.fingerprint.json","style_profile":"candidates/model-x.style.json"}
+        ]
+    })).unwrap()).unwrap();
+
+    let calibration_dir = dir.path().join("calibration");
+    fs::create_dir(&calibration_dir).unwrap();
+    let mut docs = Vec::new();
+    for (class, prefix, text) in [
+        (
+            "human",
+            "h",
+            "I test the object. Then I inspect one odd detail. The result changes my next step.",
+        ),
+        (
+            "llm",
+            "l",
+            "It is important to note this result. In summary, here are the key considerations and essential points.",
+        ),
+    ] {
+        for index in 0..8 {
+            let file = format!("{prefix}{index}.txt");
+            fs::write(
+                calibration_dir.join(&file),
+                format!("{text} Example {index}."),
+            )
+            .unwrap();
+            docs.push(serde_json::json!({"file":format!("calibration/{file}"),"class":class,"split":if index < 5 {"train"} else {"test"}}));
+        }
+    }
+    let calibration = dir.path().join("calibration.json");
+    fs::write(
+        &calibration,
+        serde_json::to_string_pretty(
+            &serde_json::json!({"schema_version":1,"language":"en","documents":docs}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let classifier = dir.path().join("classifier.json");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_antislop"))
+            .args([
+                "calibrate",
+                "--documents",
+                calibration.to_str().unwrap(),
+                "--baseline",
+                baseline.to_str().unwrap(),
+                "--candidates",
+                candidates.to_str().unwrap(),
+                "--language",
+                "en",
+                "-o",
+                classifier.to_str().unwrap()
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let article = dir.path().join("article.txt");
+    fs::write(&article, "It is important to note this result. In summary, here are the key considerations and essential points to consider.").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_antislop"))
+        .args([
+            "classify",
+            article.to_str().unwrap(),
+            "--classifier",
+            classifier.to_str().unwrap(),
+            "--baseline",
+            baseline.to_str().unwrap(),
+            "--candidates",
+            candidates.to_str().unwrap(),
+            "--language",
+            "en",
+            "--min-human-probability",
+            "0.70",
+            "--ci",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("CI FAIL"), "{stdout}");
+    assert!(stdout.contains("Human probability"), "{stdout}");
+    assert!(stdout.contains("How to pass"), "{stdout}");
+    assert!(stdout.contains("LLM-specific patterns"), "{stdout}");
+}

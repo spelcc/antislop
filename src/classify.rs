@@ -1,3 +1,4 @@
+use crate::analyze::{PatternHit, analyze_text};
 use crate::nearest::{
     CandidateClass, NearestCandidate, NearestMatch, NearestMetric, nearest_candidates,
 };
@@ -137,6 +138,7 @@ pub struct ClassificationReport {
     pub intercept_contribution: f64,
     pub llm_logit: f64,
     pub evidence: ClassificationEvidence,
+    pub llm_pattern_examples: Vec<PatternHit>,
     pub nearest: Vec<NearestMatch>,
     pub calibration: ClassifierEvaluation,
     pub calibration_prior_llm: f64,
@@ -604,6 +606,17 @@ pub fn classify_text(
     } else {
         CandidateClass::Human
     };
+    let llm_pattern_examples = candidates
+        .get(&evidence.best_llm_signal.label)
+        .map(|candidate| {
+            analyze_text(text, language, Some(&candidate.fingerprint))
+                .fingerprint_hits
+                .into_iter()
+                .filter(|hit| hit.n >= 2 && hit.weighted_signal > 0.0)
+                .take(8)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(ClassificationReport {
         schema_version: 1,
         language,
@@ -615,6 +628,7 @@ pub fn classify_text(
         intercept_contribution: round4(classifier.intercept),
         llm_logit: round4(llm_logit),
         evidence,
+        llm_pattern_examples,
         nearest: nearest.matches.into_iter().take(top).collect(),
         calibration: classifier.evaluation.clone(),
         calibration_prior_llm: classifier.prior_llm,

@@ -328,6 +328,19 @@ antislop classify article.mdoc \
   --language fr
 ```
 
+For CI, require at least 70% calibrated Human probability and print actionable correction guidance:
+
+```bash
+antislop classify article.mdoc \
+  --classifier classifier.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr \
+  --ci --min-human-probability 0.70
+```
+
+A failing gate exits with code `2`. The output lists the LLM-leaning classifier features, nearest Human references and the strongest multi-word LLM fingerprint hits to inspect first.
+
 `classify` reports Human/LLM probabilities, holdout accuracy/AUC/Brier/ECE, the best human and LLM evidence on each axis, and each feature's contribution to the logistic score. The fitted prior is deliberately **50% Human / 50% LLM**. A result such as `Human 70%` therefore means “70% under this calibrated balanced comparison,” not “70% real-world probability that a human wrote it.”
 
-The current leakage-free French benchmark uses 34 populations (6 human corpora + 28 Compar:IA models), 280 calibration-train documents and 280 independent test documents. It reaches **96.8% accuracy, ROC AUC 0.9947, Brier 0.0253 and ECE 0.0568**. See [`docs/population-classification.md`](docs/population-classification.md) for the exact split, source-level results and caveats.
+The current leakage-free French benchmark uses 34 populations (6 human corpora + 28 Compar:IA models), 280 calibration-train documents and 280 independent test documents. It reaches **96.8% accuracy, ROC AUC 0.9947, Brier 0.0253 and ECE 0.0568**. See [`docs/population-classification.md`](docs/population-classification.md) for the exact split, source-level results and caveats. English corpus sources and the separation between training and external validation are documented in [`docs/english-corpus-sources.md`](docs/english-corpus-sources.md).

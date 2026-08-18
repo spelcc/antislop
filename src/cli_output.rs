@@ -74,6 +74,84 @@ pub(crate) fn print_classification(report: &ClassificationReport) {
     );
 }
 
+pub(crate) fn print_classification_gate(report: &ClassificationReport, min_human: f64) {
+    let passed = report.human_probability >= min_human;
+    println!(
+        "\nCI {}: Human probability {:.1}% (required >= {:.1}%)",
+        if passed { "PASS" } else { "FAIL" },
+        report.human_probability * 100.0,
+        min_human * 100.0,
+    );
+    if passed {
+        return;
+    }
+
+    println!("\nHow to pass:");
+    println!(
+        "  1. Raise Human probability to at least {:.1}% and rerun the exact classifier bundle.",
+        min_human * 100.0
+    );
+
+    let mut llm_features: Vec<_> = report
+        .feature_contributions_to_llm_logit
+        .iter()
+        .filter(|(_, contribution)| **contribution > 0.0)
+        .collect();
+    llm_features.sort_by(|left, right| right.1.total_cmp(left.1));
+    for (index, (feature, contribution)) in llm_features.iter().take(3).enumerate() {
+        let advice = match feature.as_str() {
+            "top5_signal_llm_fraction" => {
+                "rewrite recurring model-specific phrases so Human candidate signals re-enter the top five"
+            }
+            "style_margin_llm" => {
+                "vary sentence rhythm, punctuation, function words and sentence openings toward the nearest Human style profile"
+            }
+            "top5_distance_llm_fraction" => {
+                "reduce the concentration of globally LLM-like ranked n-grams across the document"
+            }
+            "signal_margin_llm" => {
+                "remove or rephrase high-weight phrases that are over-represented in the strongest LLM fingerprint"
+            }
+            "distance_margin_llm" => {
+                "move the document fingerprint closer to a Human population by replacing recurrent stock n-grams"
+            }
+            _ => "reduce this LLM-leaning feature",
+        };
+        println!(
+            "  {}. {} ({:+.4} LLM logit): {}.",
+            index + 2,
+            feature,
+            contribution,
+            advice
+        );
+    }
+
+    println!("\nLLM-specific patterns to inspect first:");
+    if report.llm_pattern_examples.is_empty() {
+        println!("  - no multi-word fingerprint hits; focus on the style/rank criteria above");
+    } else {
+        for hit in report.llm_pattern_examples.iter().take(8) {
+            println!(
+                "  - “{}” x{} | {}-gram | signal {:.4}",
+                hit.pattern, hit.count, hit.n, hit.weighted_signal
+            );
+        }
+    }
+    println!(
+        "\nNearest Human references: distance={} (#{}), signal={} (#{}), style={}.",
+        report.evidence.best_human_distance.label,
+        report.evidence.best_human_distance.global_rank,
+        report.evidence.best_human_signal.label,
+        report.evidence.best_human_signal.global_rank,
+        report
+            .evidence
+            .best_human_style
+            .as_ref()
+            .map(|value| value.label.as_str())
+            .unwrap_or("n/a"),
+    );
+}
+
 pub(crate) fn print_nearest(report: &NearestReport) {
     let metric = match report.metric.as_str() {
         "rank_distance" => "rank distance (lower is closer)",
