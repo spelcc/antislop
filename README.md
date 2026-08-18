@@ -232,3 +232,20 @@ antislop cluster model-fingerprints/*.json arthur.json \
 ```
 
 See [`docs/model-consensus-forensics.md`](docs/model-consensus-forensics.md) for methodology, caveats and the fixed holdout before/after benchmark.
+
+
+## Rebuilding the French Compar:IA corpus
+
+The repository includes a reproducible recipe for a clean, model-balanced French corpus sourced from the French Ministry of Culture's public Compar:IA Parquet:
+
+```bash
+uv run --with duckdb python tools/build_comparia_corpus.py \
+  --recipe corpora/comparia-fr-editorial.json \
+  --output /path/outside/git/comparia-fr-editorial-300
+```
+
+The checked-in recipe currently targets **28 models × 300 documents = 8,400 documents**. Each final response contains at least 350 cleaned prose words. Opening prompts are globally unique across models and responses are deduplicated before and after normalization. The recipe requires knowledge/editorial categories and rejects creative/lifestyle categories such as Arts, Entertainment, Food, Shopping and Personal Development.
+
+On the Compar:IA resource identified by ETag `888b0bccc9a12948985365697653e494` (Last-Modified 2026-06-03), the recipe produces **5,030,124 cleaned words** with a median document length of 488 words. The final target is 300/model rather than the larger raw availability because code removal is intentionally applied before accepting a document: for example, only 331 Claude 3.5 Sonnet v2 responses remain at >=350 prose words after stripping code/markup.
+
+Use `--dry-run` to inspect current source availability without writing the corpus. Raw corpus files and generated profiles remain outside Git; only the recipe and builder are versioned.

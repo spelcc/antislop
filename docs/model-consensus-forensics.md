@@ -128,6 +128,24 @@ Missing features receive the rank after the longest list. The reported distance 
 
 With the current IRZ calibration corpus, Arthur's nearest ranked fingerprint is `gpt-oss-120b` at distance 0.486, but only 1/28 model fingerprints has a nearest neighbor from the same inferred family. The Arthur neighbor is therefore exploratory, not an authorship or lineage result. That family-clustering failure is itself informative: ten unique prompts per model are insufficient for a reliable model phylogeny, especially because the corpus was intentionally constructed with globally unique prompts to avoid topic leakage in the consensus fingerprint. The clustering feature is implemented, but family-level conclusions need a larger and prompt-matched generation corpus.
 
+## Compar:IA reproducible corpus recipe
+
+`corpora/comparia-fr-editorial.json` and `tools/build_comparia_corpus.py` provide the reproducible source pipeline used for the larger French LLM corpus. The builder queries the official Compar:IA Parquet directly with DuckDB instead of vendoring the 2.5 GB source file.
+
+The strict recipe requires French, at least one knowledge/editorial category, no creative/lifestyle category, globally unique prompts, and exact response deduplication. It strips fenced/inline code and markup plumbing before enforcing the final 350-word prose minimum.
+
+A live build against the resource with ETag `888b0bccc9a12948985365697653e494` produced:
+
+- 28 models;
+- 300 documents/model;
+- 8,400 documents total;
+- 5,030,124 cleaned words;
+- median 488 words/document;
+- 8,400 unique prompt IDs;
+- 8,400 unique cleaned response hashes.
+
+Raw availability is substantially larger, but a 300/model target is deliberately used for a balanced clean-prose corpus. Code-heavy models lose many nominally long answers after cleanup; Claude 3.5 Sonnet v2 is the limiting model with 331 eligible clean responses in the current source snapshot. Counting code tokens merely to hit a larger corpus target would undermine the stylistic comparison.
+
 ## Holdout benchmark
 
 The before/after comparison fixes the data split:
