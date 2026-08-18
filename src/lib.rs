@@ -6,6 +6,7 @@ pub mod lexical;
 pub mod lint;
 pub mod metadata;
 pub mod metrics;
+pub mod nearest;
 pub mod profile;
 pub mod prose;
 pub mod structural;
@@ -22,6 +23,9 @@ pub use lint::{
     LintOutcome, LintThresholds, SentenceFinding, SentenceSpan, lint_text, split_sentences,
 };
 pub use metadata::{DocumentMetadata, LoadedDocument, load_manifest};
+pub use nearest::{
+    NearestMatch, NearestMetric, NearestReport, load_fingerprint_directory, nearest_fingerprints,
+};
 pub use profile::{
     CorpusProfile, DocumentProfile, ModelProfile, PatternStats, ProfileOptions, ProfileSlice,
     profile_documents, profile_loaded_documents,

@@ -106,6 +106,19 @@ French structural lint covers several contrast templates independently, includin
 
 These forms also occur in genuine human prose. In the final calibration, at least one structural form appears in 18/128 Arthur editorial documents (14.1%) and 60/618 GlobalVoices documents (9.7%). They are localized editorial observations, not corpus-level AI evidence. Structural findings therefore remain separate from the fingerprint score.
 
+## Single-document nearest-model comparison
+
+`antislop nearest` applies the same ranked-fingerprint representation directly to one cleaned document. Because the target contains exactly one document, its temporary fingerprint uses `min_documents=1`; candidate model fingerprints keep their normal recurrence thresholds (for the current 300-document Compar:IA set, `min_model_documents=5`).
+
+The report intentionally exposes two independent rankings rather than collapsing them into a probability:
+
+- **rank distance**: normalized distance between ordered 120-word + 40-bigram + 40-trigram fingerprints; lower is closer;
+- **document signal**: model-specific fingerprint evidence actually occurring in the target document; higher means more matched over-represented patterns.
+
+The command validates that candidate fingerprints share language, lexical-reference and guard configuration. A guarded candidate set can only be compared when the matching guard profile is supplied.
+
+These rankings answer “which stored model fingerprint is closest under this representation?”, not “which model generated this text?”. Topic, prompt distribution, training-data overlap and model-family convergence remain confounders.
+
 ## Rank distance and clustering
 
 `antislop cluster` compares ordered fingerprint features and builds a deterministic average-linkage hierarchy:

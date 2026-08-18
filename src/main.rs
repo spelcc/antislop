@@ -1,9 +1,10 @@
 use antislop::{
-    FingerprintOptions, Language, LintOutcome, LintThresholds, ProfileOptions, StyleComparison,
-    analyze_text, build_fingerprint_suite, build_style_profile, clean_prose, cluster_fingerprints,
-    compare_style, lint_text, load_manifest, profile_documents, profile_loaded_documents,
+    FingerprintOptions, Language, LintOutcome, LintThresholds, NearestMetric, NearestReport,
+    ProfileOptions, StyleComparison, analyze_text, build_fingerprint_suite, build_style_profile,
+    clean_prose, cluster_fingerprints, compare_style, lint_text, load_fingerprint_directory,
+    load_manifest, nearest_fingerprints, profile_documents, profile_loaded_documents,
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -71,6 +72,28 @@ enum Command {
         #[command(subcommand)]
         command: StyleCommand,
     },
+    /// Rank which model fingerprints are closest to one document.
+    Nearest {
+        #[arg(value_name = "FILE")]
+        input: Option<PathBuf>,
+        /// Human/baseline corpus profile used to build the document fingerprint.
+        #[arg(long)]
+        baseline: PathBuf,
+        /// Directory containing one fingerprint JSON per model.
+        #[arg(long)]
+        models_dir: PathBuf,
+        /// Optional accepted-prose guard profile used when fingerprinting the document.
+        #[arg(long)]
+        guard: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "rank-distance")]
+        metric: NearestCliMetric,
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        #[arg(long, value_enum, default_value = "en")]
+        language: Language,
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare ranked fingerprints and build an average-linkage cluster tree.
     Cluster {
         #[arg(required = true)]
@@ -124,6 +147,21 @@ enum Command {
         #[arg(long, default_value_t = 40)]
         trigram_limit: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum NearestCliMetric {
+    RankDistance,
+    DocumentSignal,
+}
+
+impl From<NearestCliMetric> for NearestMetric {
+    fn from(value: NearestCliMetric) -> Self {
+        match value {
+            NearestCliMetric::RankDistance => NearestMetric::RankDistance,
+            NearestCliMetric::DocumentSignal => NearestMetric::DocumentSignal,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -280,6 +318,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Command::Nearest {
+            input,
+            baseline,
+            models_dir,
+            guard,
+            metric,
+            top,
+            language,
+            json,
+        } => {
+            if top == 0 {
+                return Err("--top must be positive".into());
+            }
+            let raw = read_text(input.as_deref())?;
+            let text = clean_prose(&raw);
+            if text.trim().is_empty() {
+                return Err("nearest input contains no prose after cleaning".into());
+            }
+            let baseline: antislop::CorpusProfile = read_json(&baseline)?;
+            let guard: Option<antislop::CorpusProfile> =
+                guard.as_deref().map(read_json).transpose()?;
+            let candidates = load_fingerprint_directory(&models_dir).map_err(io::Error::other)?;
+            let report = nearest_fingerprints(
+                &text,
+                language,
+                &baseline,
+                guard.as_ref(),
+                &candidates,
+                metric.into(),
+                top,
+            )
+            .map_err(io::Error::other)?;
+            if json {
+                print_json(&report)?;
+            } else {
+                print_nearest(&report);
+            }
+        }
         Command::Cluster {
             fingerprints,
             output,
@@ -376,6 +452,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn print_nearest(report: &NearestReport) {
+    let metric = if report.metric == "rank_distance" {
+        "rank distance (lower is closer)"
+    } else {
+        "document signal (higher matches more model-specific patterns)"
+    };
+    println!(
+        "Nearest fingerprints | {} candidates | {metric}",
+        report.candidate_count
+    );
+    println!(
+        "{:<4} {:<36} {:>10} {:>10} {:>10} {:>10}",
+        "#", "model", "distance", "dist-rank", "signal", "sig-rank"
+    );
+    for (index, item) in report.matches.iter().enumerate() {
+        println!(
+            "{:<4} {:<36} {:>10.4} {:>10} {:>10.4} {:>10}",
+            index + 1,
+            item.model_id.as_deref().unwrap_or(&item.label),
+            item.rank_distance,
+            item.rank_distance_position,
+            item.document_signal_per_1000_tokens,
+            item.document_signal_position,
+        );
+    }
+    println!(
+        "
+Nearest fingerprint is descriptive similarity, not model attribution or authorship probability."
+    );
 }
 
 fn print_style_comparison(comparison: &StyleComparison) {

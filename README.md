@@ -249,3 +249,30 @@ The checked-in recipe currently targets **28 models × 300 documents = 8,400 doc
 On the Compar:IA resource identified by ETag `888b0bccc9a12948985365697653e494` (Last-Modified 2026-06-03), the recipe produces **5,030,124 cleaned words** with a median document length of 488 words. The final target is 300/model rather than the larger raw availability because code removal is intentionally applied before accepting a document: for example, only 331 Claude 3.5 Sonnet v2 responses remain at >=350 prose words after stripping code/markup.
 
 Use `--dry-run` to inspect current source availability without writing the corpus. Raw corpus files and generated profiles remain outside Git; only the recipe and builder are versioned.
+
+## Finding the nearest model fingerprint
+
+`nearest` ranks a single prose document against a directory of model fingerprints without requiring an external wrapper:
+
+```bash
+antislop nearest article.mdoc \
+  --baseline human-fr.profile.json \
+  --models-dir fingerprints/models \
+  --language fr \
+  --top 10
+```
+
+The default `rank-distance` mode builds a one-document target fingerprint (`min_documents=1`) against the same human baseline, then compares its ordered 120-word / 40-bigram / 40-trigram feature list to each model fingerprint. It also reports the independent document signal for every candidate.
+
+To sort by model-specific patterns actually found in the document instead:
+
+```bash
+antislop nearest article.mdoc \
+  --baseline human-fr.profile.json \
+  --models-dir fingerprints/models \
+  --language fr \
+  --metric document-signal \
+  --json
+```
+
+`nearest` automatically strips Markdown/MDOC plumbing with the same prose cleaner used by style comparison. Candidate fingerprints must agree on language, `wordfreq` configuration and guard usage; guarded model fingerprints require the matching `--guard` profile. The output is descriptive fingerprint proximity, **not model attribution or an authorship probability**.

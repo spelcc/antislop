@@ -569,3 +569,132 @@ fn metadata_manifest_builds_model_consensus_phrases_and_cluster() {
             .ends_with(';')
     );
 }
+
+#[test]
+fn nearest_ranks_model_fingerprints_and_cleans_mdoc() {
+    let dir = tempdir().unwrap();
+    let baseline_dir = dir.path().join("baseline");
+    let matching_dir = dir.path().join("matching");
+    let alien_dir = dir.path().join("alien");
+    let models_dir = dir.path().join("models");
+    for path in [&baseline_dir, &matching_dir, &alien_dir, &models_dir] {
+        fs::create_dir(path).unwrap();
+    }
+    for index in 0..3 {
+        fs::write(
+            baseline_dir.join(format!("{index}.txt")),
+            "Une prose humaine ordinaire décrit précisément un objet concret.",
+        )
+        .unwrap();
+        fs::write(
+            matching_dir.join(format!("{index}.txt")),
+            "Il est important de noter ce résultat. Il est important de noter cette différence.",
+        )
+        .unwrap();
+        fs::write(
+            alien_dir.join(format!("{index}.txt")),
+            "Galaxie turquoise mécanique banquise. Galaxie turquoise mécanique banquise.",
+        )
+        .unwrap();
+    }
+
+    let baseline = dir.path().join("baseline.json");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_antislop"))
+            .args([
+                "profile",
+                baseline_dir.to_str().unwrap(),
+                "--language",
+                "fr",
+                "-o",
+                baseline.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for (label, corpus) in [("matching", &matching_dir), ("alien", &alien_dir)] {
+        let profile = dir.path().join(format!("{label}.profile.json"));
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_antislop"))
+                .args([
+                    "profile",
+                    corpus.to_str().unwrap(),
+                    "--language",
+                    "fr",
+                    "-o",
+                    profile.to_str().unwrap(),
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_antislop"))
+                .args([
+                    "fingerprint",
+                    "--target",
+                    profile.to_str().unwrap(),
+                    "--baseline",
+                    baseline.to_str().unwrap(),
+                    "--min-documents",
+                    "1",
+                    "--no-wordfreq",
+                    "--label",
+                    label,
+                    "-o",
+                    models_dir.join(format!("{label}.json")).to_str().unwrap(),
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    let article = dir.path().join("article.mdoc");
+    fs::write(
+        &article,
+        "---\ntitle: Métadonnées ignorées\n---\nIl est [important](https://example.com) de noter ce résultat.\n\n```js\nconst galaxie = 'ignore';\n```\nIl est important de noter cette différence.",
+    )
+    .unwrap();
+
+    let run = |metric: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_antislop"))
+            .args([
+                "nearest",
+                article.to_str().unwrap(),
+                "--baseline",
+                baseline.to_str().unwrap(),
+                "--models-dir",
+                models_dir.to_str().unwrap(),
+                "--language",
+                "fr",
+                "--metric",
+                metric,
+                "--top",
+                "2",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+
+    let distance = run("rank-distance");
+    assert_eq!(distance["candidate_count"], 2);
+    assert_eq!(distance["metric"], "rank_distance");
+    assert_eq!(distance["matches"][0]["label"], "matching");
+    assert_eq!(distance["matches"][0]["rank_distance_position"], 1);
+    assert_eq!(distance["target_fingerprint"]["min_documents"], 1);
+
+    let signal = run("document-signal");
+    assert_eq!(signal["metric"], "document_signal");
+    assert_eq!(signal["matches"][0]["label"], "matching");
+    assert_eq!(signal["matches"][0]["document_signal_position"], 1);
+}
