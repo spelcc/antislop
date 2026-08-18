@@ -15,7 +15,7 @@ Given the same files, configuration and binary version, the output is the same:
 - MATTR with a 500-token window;
 - HD-D with a sample size of 42;
 - Distinct-1, Distinct-2 and Distinct-3;
-- word, bigram and trigram frequencies;
+- content-word unigram frequencies and literal adjacent bigram/trigram frequencies;
 - document frequency for each pattern;
 - target/baseline over-representation ratios;
 - simple structural rules such as repeated `not X, but Y` forms;
@@ -37,9 +37,90 @@ antislop analyze article.txt --language fr
 cat article.txt | antislop analyze --language fr
 ```
 
+
+## Author style profiles
+
+The `style` commands are separate from the LLM/human fingerprint. They measure whether a document sits near the statistical center of an author's or publication's prose without treating the result as an authorship probability.
+
+Build a profile from one document per file:
+
+```bash
+antislop style profile corpus-arthur-fr/ \
+  --language fr \
+  -o arthur-fr.style.json
+```
+
+Corpus directories may contain metadata JSON files; style profiling only reads `.txt`, `.md`, `.markdown` and `.mdoc` documents. Markdown/Markdoc inputs are cleaned automatically before measurement.
+
+Compare a new article:
+
+```bash
+antislop style compare article.mdoc \
+  --profile arthur-fr.style.json
+```
+
+Or emit machine-readable JSON:
+
+```bash
+antislop style compare article.mdoc \
+  --profile arthur-fr.style.json \
+  --json
+```
+
+The profile currently measures five topic-light families:
+
+- `rhythm`: sentence length and short/long sentence rates; paragraph rhythm is intentionally excluded because many corpora do not preserve original paragraph boundaries;
+- `punctuation`: commas, semicolons, colons, questions, exclamations, parentheses, dashes and ellipses;
+- `pronoun`: first-person singular/plural, `on` in French, and second-person usage;
+- `function_word`: fixed high-frequency connective/function-word rates;
+- `starter`: selected sentence-opening function words/connectors.
+
+Each metric stores the corpus mean, median, median absolute deviation, p10/p90 and non-zero document rate. Comparison uses robust standardized deviations. Sparse function-word/starter metrics that occur in fewer than 10% of profile documents do not affect the global distance.
+
+`overall_distance` is an equal-weight average of the five group distances. Lower means the document is closer to the center of the profile. `within_profile_band_ratio` reports how many scored metrics remain within two robust standard deviations. Neither value is an authorship probability, an AI detector, or proof that one person wrote a document.
+
+For a useful author profile, prefer at least ~50,000 words across many documents; 100,000+ words is substantially better. Keep one source document per file so document-level distributions remain available.
+
+## Sentence-level lint and CI
+
+`analyze` gives a document-wide report. `lint` localizes the same deterministic evidence sentence by sentence so an editor can change the exact passage that carries the signal.
+
+```bash
+antislop lint article.txt --language fr
+antislop lint article.txt --language fr --fingerprint slop-fr.json --json
+```
+
+Each finding contains the original sentence, sentence index, UTF-8 byte span, start/end line, structural rules and high-confidence fingerprint hits. Unigrams remain document-level diagnostics because single content words are usually topical. Bigrams contribute to the document signal but do not create local warnings by themselves. Local corpus warnings are reserved for trigrams; structural rules remain independent. This makes the JSON suitable for GitHub annotations and editor integrations without turning every technical noun into a red flag.
+
+CI thresholds are opt-in and independent:
+
+```bash
+antislop lint article.txt \
+  --language fr \
+  --fingerprint slop-fr.json \
+  --max-structural-hits 2 \
+  --max-document-signal 18 \
+  --max-sentence-signal 8
+```
+
+Exit code `0` means the configured thresholds passed. Exit code `2` means the analysis succeeded but at least one configured threshold was exceeded. Do not copy threshold numbers from this example into a project: calibrate them against that project's accepted corpus first.
+
+## How much corpus is useful?
+
+For editorial fingerprinting, corpus size is better expressed in words than files. Practical starting points per language and per corpus are:
+
+- below 25,000 words: exploratory only;
+- around 50,000 words: minimum useful baseline;
+- 100,000 words: solid working corpus;
+- 250,000+ words: comfortable for rarer bigram/trigram estimates.
+
+These are engineering recommendations, not hard statistical guarantees. Distribution matters as much as size. For LLM-vs-human fingerprints, keep language, genre and approximate register comparable. For an author-style corpus, varied subjects are useful because topic vocabulary changes while recurring stylistic habits remain visible.
+
+The two sides do not need identical word counts because frequencies are normalized, but severely unbalanced corpora make zero-baseline patterns less trustworthy. Prefer roughly comparable sizes or use resampling before treating rare patterns as stable.
+
 ## Build corpus profiles
 
-A profile treats each file as one document. Directory inputs are scanned recursively.
+A profile treats each file as one document. Directory inputs are scanned recursively. Schema v2 profiles keep content-filtered unigrams for topic diagnostics, but build bigrams and trigrams from the original normalized token stream so multi-word patterns preserve literal adjacency and function words.
 
 ```bash
 antislop profile corpus/human/ --language fr -o human.json
@@ -61,13 +142,26 @@ antislop fingerprint \
   -o fingerprint.json
 ```
 
+For a publication or author-specific workflow, an optional accepted-prose guard can remove patterns that are also characteristic of the house style:
+
+```bash
+antislop fingerprint \
+  --target llm.json \
+  --baseline human.json \
+  --guard accepted-author.json \
+  --min-guard-ratio 2 \
+  -o fingerprint.json
+```
+
+With a guard, a pattern present in accepted prose must still be at least `min-guard-ratio` times more frequent in the target corpus. Patterns absent from the guard remain eligible. The guard is a false-positive control, not evidence of authorship.
+
 The ratio for a pattern is:
 
 ```text
 frequency(target) / frequency(baseline)
 ```
 
-A `null` ratio means that the pattern appeared in the target corpus but not in the baseline corpus. It is kept separate instead of pretending division by zero is a meaningful giant number.
+A `null` ratio means that the pattern appeared in the target corpus but not in the baseline corpus. It is kept separate instead of pretending division by zero is a meaningful giant number. Fingerprint ranking assigns zero-baseline patterns finite evidence and also rewards recurrence across target documents, so a rare baseline absence cannot automatically monopolize the fingerprint.
 
 ## Analyze against a fingerprint
 
@@ -77,7 +171,7 @@ antislop analyze article.txt \
   --fingerprint fingerprint.json
 ```
 
-`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. It sums only finite over-representation ratios. Patterns absent from the baseline remain visible as `ratio: null` and are counted separately in `zero_baseline_occurrences` instead of receiving an invented infinite weight. Each hit includes its pattern, occurrence count, ratio and contribution.
+`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. Unigrams are retained as lexical/topic diagnostics with zero slop weight. Bigrams have reduced document-level weight. Trigrams carry the strongest local phrase evidence. Finite ratios are log-scaled and capped; zero-baseline phrase evidence receives a finite conservative weight rather than infinity. Each hit includes its pattern, n-gram width, signal class, occurrence count, ratio and contribution.
 
 ## Corpus design matters
 

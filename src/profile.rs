@@ -49,10 +49,18 @@ pub fn profile_documents(language: Language, documents: &[(String, String)]) -> 
             id: id.clone(),
             lexical: lexical_metrics(&raw_tokens),
         });
+        // Single words are topic-sensitive, so profile only content words there.
         collect(&content, 1, doc_index, &mut raw_word_counts, &mut word_docs);
-        collect(&content, 2, doc_index, &mut bigram_counts, &mut bigram_docs);
+        // Multi-word evidence must preserve literal adjacency and function words.
         collect(
-            &content,
+            &raw_tokens,
+            2,
+            doc_index,
+            &mut bigram_counts,
+            &mut bigram_docs,
+        );
+        collect(
+            &raw_tokens,
             3,
             doc_index,
             &mut trigram_counts,
@@ -61,7 +69,7 @@ pub fn profile_documents(language: Language, documents: &[(String, String)]) -> 
     }
 
     CorpusProfile {
-        schema_version: 1,
+        schema_version: 2,
         language,
         document_count: documents.len(),
         token_count,
@@ -126,5 +134,16 @@ mod tests {
         let profile = profile_documents(Language::Fr, &docs);
         assert_eq!(profile.words["robot"].count, 3);
         assert_eq!(profile.words["robot"].document_frequency, 2);
+    }
+
+    #[test]
+    fn phrase_ngrams_keep_stopwords_and_literal_adjacency() {
+        let docs = vec![(
+            "a".into(),
+            "Une analyse à partir de données solides.".into(),
+        )];
+        let profile = profile_documents(Language::Fr, &docs);
+        assert!(profile.trigrams.contains_key("partir de données"));
+        assert!(!profile.trigrams.contains_key("à partir données"));
     }
 }
