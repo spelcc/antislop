@@ -49,15 +49,15 @@ pub fn tokenize(text: &str) -> Vec<String> {
 }
 
 pub fn content_tokens(text: &str, language: Language) -> Vec<String> {
-    let stops = stopwords(language);
+    let stops = stopword_set(language);
     tokenize(text)
         .into_iter()
-        .map(|token| normalize_content_token(token, language))
+        .map(|token| normalize_content_word(token, language))
         .filter(|token| !token.is_empty() && !stops.contains(token.as_str()))
         .collect()
 }
 
-fn normalize_content_token(token: String, language: Language) -> String {
+pub(crate) fn normalize_content_word(token: String, language: Language) -> String {
     if language != Language::Fr {
         return token;
     }
@@ -71,7 +71,7 @@ fn normalize_content_token(token: String, language: Language) -> String {
     token
 }
 
-fn stopwords(language: Language) -> HashSet<&'static str> {
+pub(crate) fn stopword_set(language: Language) -> HashSet<&'static str> {
     let words: &[&str] = match language {
         Language::En => &[
             "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "for", "from", "had",
@@ -80,11 +80,15 @@ fn stopwords(language: Language) -> HashSet<&'static str> {
             "this", "to", "was", "we", "were", "which", "who", "will", "with", "you", "your",
         ],
         Language::Fr => &[
-            "a", "ai", "au", "aux", "avec", "ce", "ces", "cette", "dans", "de", "des", "du",
-            "elle", "en", "est", "et", "eux", "il", "ils", "je", "la", "le", "les", "leur", "lui",
-            "mais", "me", "mes", "moi", "mon", "ne", "nos", "notre", "nous", "on", "ou", "par",
-            "pas", "pour", "que", "qui", "sa", "se", "ses", "son", "sur", "ta", "te", "tes", "toi",
-            "ton", "tu", "un", "une", "vos", "votre", "vous", "y",
+            "a", "ai", "ainsi", "après", "au", "aucun", "aucune", "aux", "avant", "avec", "à",
+            "ce", "ces", "cet", "cette", "chez", "comme", "dans", "de", "des", "donc", "dont",
+            "du", "elle", "elles", "en", "encore", "est", "et", "eux", "fait", "faire", "il",
+            "ils", "je", "la", "le", "les", "leur", "leurs", "lui", "là", "mais", "me", "mes",
+            "moi", "mon", "même", "ne", "nos", "notre", "nous", "on", "ont", "ou", "où", "par",
+            "pas", "plus", "pour", "quand", "que", "quel", "quelle", "quelles", "quels", "qui",
+            "sa", "sans", "se", "ses", "si", "son", "sont", "sous", "sur", "ta", "te", "tes",
+            "toi", "ton", "tous", "tout", "toute", "toutes", "très", "tu", "un", "une", "vos",
+            "votre", "vous", "y", "été", "être",
         ],
     };
     words.iter().copied().collect()

@@ -90,7 +90,7 @@ antislop lint article.txt --language fr
 antislop lint article.txt --language fr --fingerprint slop-fr.json --json
 ```
 
-Each finding contains the original sentence, sentence index, UTF-8 byte span, start/end line, structural rules and high-confidence fingerprint hits. Unigrams remain document-level diagnostics because single content words are usually topical. Bigrams contribute to the document signal but do not create local warnings by themselves. Local corpus warnings are reserved for trigrams; structural rules remain independent. This makes the JSON suitable for GitHub annotations and editor integrations without turning every technical noun into a red flag.
+Each finding contains the original sentence, sentence index, UTF-8 byte span, start/end line, structural rules and high-confidence fingerprint hits. Unigrams remain document-level diagnostics because single content words are usually topical. Bigrams contribute to the document signal but do not create local warnings by themselves. Local corpus warnings are reserved for trigrams and recovered longer phrases; structural rules remain independent. This makes the JSON suitable for GitHub annotations and editor integrations without turning every technical noun into a red flag.
 
 CI thresholds are opt-in and independent:
 
@@ -120,7 +120,7 @@ The two sides do not need identical word counts because frequencies are normaliz
 
 ## Build corpus profiles
 
-A profile treats each file as one document. Directory inputs are scanned recursively. Schema v2 profiles keep content-filtered unigrams for topic diagnostics, but build bigrams and trigrams from the original normalized token stream so multi-word patterns preserve literal adjacency and function words.
+A profile treats each file as one document. Directory inputs are scanned recursively. Schema v3 corpus profiles keep content-filtered unigrams, literal adjacent bigrams/trigrams, prompt recurrence, optional model metadata, and a second stopword-stripped discovery representation used for exact phrase recovery.
 
 ```bash
 antislop profile corpus/human/ --language fr -o human.json
@@ -171,7 +171,7 @@ antislop analyze article.txt \
   --fingerprint fingerprint.json
 ```
 
-`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. Unigrams are retained as lexical/topic diagnostics with zero slop weight. Bigrams have reduced document-level weight. Trigrams carry the strongest local phrase evidence. Finite ratios are log-scaled and capped; zero-baseline phrase evidence receives a finite conservative weight rather than infinity. Each hit includes its pattern, n-gram width, signal class, occurrence count, ratio and contribution.
+`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. In schema-v4 fingerprints, French unigrams that survive both the human-baseline and `wordfreq` filters contribute low-weight document evidence but never create local warnings. Legacy schema-v3 unigram scoring remains zero for compatibility. Bigrams have reduced document-level weight. Trigrams and recovered longer phrases carry the strongest local evidence. Finite ratios are log-scaled and capped; zero-baseline phrase evidence receives a finite conservative weight rather than infinity. Each hit includes its pattern, n-gram width, signal class, source, recurrence support, ratio and contribution.
 
 ## Corpus design matters
 
@@ -199,3 +199,148 @@ The original research implementation is available at `sam-paech/slop-forensics`.
 ## License
 
 MIT.
+
+## Model-aware consensus fingerprints
+
+For multi-model generated corpora, prefer a metadata manifest and build one fingerprint per model before deriving a cross-model consensus:
+
+```bash
+antislop profile \
+  --manifest corpus-llm/index.json \
+  --recover-phrases \
+  --language fr \
+  -o llm-fr.profile.json
+
+antislop fingerprint \
+  --target llm-fr.profile.json \
+  --baseline human-fr.profile.json \
+  --guard accepted-author.profile.json \
+  --min-model-documents 2 \
+  --min-models 2 \
+  --models-output-dir model-fingerprints/ \
+  -o slop-fr.json
+```
+
+The profile records `model_id`, inferred/explicit `family`, `prompt_id` and domains. Consensus entries expose model/family support. French lexical candidates are checked against the bundled `wordfreq` large-FR reference; literal n-grams and stopword-stripped discovery n-grams are kept separately; discovery trigrams can recover exact longer surface phrases.
+
+Explore ranked fingerprint similarity with:
+
+```bash
+antislop cluster model-fingerprints/*.json arthur.json \
+  -o cluster.json \
+  --newick-output cluster.nwk
+```
+
+See [`docs/model-consensus-forensics.md`](docs/model-consensus-forensics.md) for methodology, caveats and the fixed holdout before/after benchmark.
+
+
+## Rebuilding the French Compar:IA corpus
+
+The repository includes a reproducible recipe for a clean, model-balanced French corpus sourced from the French Ministry of Culture's public Compar:IA Parquet:
+
+```bash
+uv run --with duckdb python tools/build_comparia_corpus.py \
+  --recipe corpora/comparia-fr-editorial.json \
+  --output /path/outside/git/comparia-fr-editorial-300
+```
+
+The checked-in recipe currently targets **28 models × 300 documents = 8,400 documents**. Each final response contains at least 350 cleaned prose words. Opening prompts are globally unique across models and responses are deduplicated before and after normalization. The recipe requires knowledge/editorial categories and rejects creative/lifestyle categories such as Arts, Entertainment, Food, Shopping and Personal Development.
+
+On the Compar:IA resource identified by ETag `888b0bccc9a12948985365697653e494` (Last-Modified 2026-06-03), the recipe produces **5,030,124 cleaned words** with a median document length of 488 words. The final target is 300/model rather than the larger raw availability because code removal is intentionally applied before accepting a document: for example, only 331 Claude 3.5 Sonnet v2 responses remain at >=350 prose words after stripping code/markup.
+
+Use `--dry-run` to inspect current source availability without writing the corpus. Raw corpus files and generated profiles remain outside Git; only the recipe and builder are versioned.
+
+## Comparing a document with human and LLM populations
+
+`nearest` can still rank one document against a directory of model fingerprints:
+
+```bash
+antislop nearest article.mdoc \
+  --baseline human-fr.profile.json \
+  --models-dir fingerprints/models \
+  --language fr \
+  --top 10
+```
+
+For a symmetric human/LLM comparison, use a candidate manifest instead. Every population has the same fingerprint representation and may also carry a style profile:
+
+```json
+{
+  "schema_version": 1,
+  "language": "fr",
+  "candidates": [
+    {
+      "label": "arthur",
+      "class": "human",
+      "fingerprint": "arthur.fingerprint.json",
+      "style_profile": "arthur.style.json"
+    },
+    {
+      "label": "gpt-5.4",
+      "class": "llm",
+      "fingerprint": "gpt-5.4.fingerprint.json",
+      "style_profile": "gpt-5.4.style.json"
+    }
+  ]
+}
+```
+
+Then:
+
+```bash
+antislop nearest article.mdoc \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr \
+  --metric rank-distance
+```
+
+Three independent rankings are exposed:
+
+- `rank-distance`: similarity between ordered 120-word / 40-bigram / 40-trigram fingerprints, lower is closer;
+- `document-signal`: candidate-specific over-represented patterns actually present in the document, higher is stronger;
+- `style-distance`: topic-light sentence rhythm, punctuation, pronouns, function words and sentence starters, lower is closer.
+
+Candidate fingerprints must use the same language, fingerprint schema, recurrence threshold, lexical reference and guard configuration. `nearest` automatically strips Markdown/MDOC plumbing. The ranking remains descriptive similarity, not authorship attribution.
+
+## Calibrated human-vs-LLM classification
+
+A probability should not be invented from ranks. `calibrate` instead fits a deterministic balanced logistic regression from labeled documents that are separate from the candidate fingerprints:
+
+```bash
+antislop calibrate \
+  --documents calibration.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr \
+  -o classifier.json
+```
+
+The calibration manifest explicitly marks `train` and `test` documents. The classifier uses five auditable features: best human-vs-LLM distance margin, signal margin, style margin, LLM fraction in the five nearest rank-distance candidates, and LLM fraction in the five strongest document-signal candidates.
+
+Apply it with:
+
+```bash
+antislop classify article.mdoc \
+  --classifier classifier.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr
+```
+
+For CI, require at least 70% calibrated Human probability and print actionable correction guidance:
+
+```bash
+antislop classify article.mdoc \
+  --classifier classifier.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr \
+  --ci --min-human-probability 0.70
+```
+
+A failing gate exits with code `2`. The output lists the LLM-leaning classifier features and then pinpoints source lines to rewrite. `Priority passages` include the exact sentence, merged bad phrase(s), local LLM-vs-Human signal margin, supporting LLM fingerprints, a `high`/`medium` evidence label, and a constrained rewrite instruction. Weak one-model bigrams are excluded. When the nearest Human style profile shows a defensible rhythm deviation, `Style hotspots` also identify exact source lines with short-sentence stacks. The JSON report schema v2 exposes the same data as `fixes[]` and `style_fixes[]` for automated editing loops.
+
+`classify` reports Human/LLM probabilities, holdout accuracy/AUC/Brier/ECE, the best human and LLM evidence on each axis, and each feature's contribution to the logistic score. The fitted prior is deliberately **50% Human / 50% LLM**. A result such as `Human 70%` therefore means “70% under this calibrated balanced comparison,” not “70% real-world probability that a human wrote it.”
+
+The current leakage-free French benchmark uses 34 populations (6 human corpora + 28 Compar:IA models), 280 calibration-train documents and 280 independent test documents. It reaches **96.8% accuracy, ROC AUC 0.9947, Brier 0.0253 and ECE 0.0568**. See [`docs/population-classification.md`](docs/population-classification.md) for the exact split, source-level results and caveats. English corpus sources and the separation between training and external validation are documented in [`docs/english-corpus-sources.md`](docs/english-corpus-sources.md).

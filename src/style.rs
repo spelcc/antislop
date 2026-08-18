@@ -94,6 +94,13 @@ pub fn build_style_profile(
 
 pub fn compare_style(text: &str, profile: &StyleProfile) -> StyleComparison {
     let document = style_metrics(text, profile.language);
+    compare_style_document(&document, profile)
+}
+
+pub fn compare_style_document(
+    document: &StyleDocumentMetrics,
+    profile: &StyleProfile,
+) -> StyleComparison {
     let mut deviations = Vec::new();
     let mut grouped = BTreeMap::<String, Vec<f64>>::new();
     let mut within = 0usize;
@@ -153,7 +160,7 @@ pub fn compare_style(text: &str, profile: &StyleProfile) -> StyleComparison {
         schema_version: PROFILE_SCHEMA_VERSION,
         language: profile.language,
         profile_documents: profile.document_count,
-        document,
+        document: document.clone(),
         overall_distance: round4(overall_distance),
         within_profile_band_ratio: round4(if scored == 0 {
             0.0

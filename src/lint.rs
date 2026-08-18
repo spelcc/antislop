@@ -137,7 +137,7 @@ fn finding_for(
         .into_iter()
         .filter(|hit| {
             hit.signal_class == PatternSignalClass::Phrase
-                && hit.n == 3
+                && hit.n >= 3
                 && hit.weighted_signal >= 2.5
         })
         .collect();
@@ -297,9 +297,15 @@ mod tests {
     #[test]
     fn unigram_only_fingerprint_does_not_flag_a_sentence() {
         let fingerprint = Fingerprint {
-            schema_version: 1,
+            schema_version: 4,
             language: Language::Fr,
             min_documents: 3,
+            min_models: 0,
+            target_model_count: 0,
+            target_label: None,
+            target_model_id: None,
+            target_family: None,
+            lexical_reference: None,
             guard_profile_documents: None,
             min_guard_ratio: None,
             words: vec![crate::fingerprint::FingerprintEntry {
@@ -309,11 +315,21 @@ mod tests {
                 baseline_frequency: 0.0,
                 ratio: None,
                 target_document_frequency: 10,
+                target_prompt_frequency: 10,
+                model_frequency: 0,
+                family_frequency: 0,
+                model_ids: vec![],
+                families: vec![],
                 guard_frequency: None,
                 guard_ratio: None,
+                reference_frequency: None,
+                reference_ratio: None,
+                discovery_pattern: None,
+                source: crate::fingerprint::FingerprintSource::Lexical,
             }],
             bigrams: vec![],
             trigrams: vec![],
+            phrases: vec![],
         };
         let outcome = lint_text(
             "Cette API ouvre le marché.",
@@ -327,10 +343,8 @@ mod tests {
             outcome.report.document.fingerprint_hits[0].signal_class,
             PatternSignalClass::Lexical
         );
-        assert_eq!(
-            outcome.report.document.fingerprint_hits[0].weighted_signal,
-            0.0
-        );
+        assert!(outcome.report.document.fingerprint_hits[0].weighted_signal > 0.0);
+        assert!(outcome.report.document.fingerprint_hits[0].weighted_signal < 0.5);
     }
 
     #[test]
@@ -339,6 +353,12 @@ mod tests {
             schema_version: 2,
             language: Language::Fr,
             min_documents: 3,
+            min_models: 0,
+            target_model_count: 0,
+            target_label: None,
+            target_model_id: None,
+            target_family: None,
+            lexical_reference: None,
             guard_profile_documents: None,
             min_guard_ratio: None,
             words: vec![],
@@ -349,10 +369,20 @@ mod tests {
                 baseline_frequency: 0.0,
                 ratio: None,
                 target_document_frequency: 12,
+                target_prompt_frequency: 12,
+                model_frequency: 0,
+                family_frequency: 0,
+                model_ids: vec![],
+                families: vec![],
                 guard_frequency: None,
                 guard_ratio: None,
+                reference_frequency: None,
+                reference_ratio: None,
+                discovery_pattern: None,
+                source: crate::fingerprint::FingerprintSource::LiteralNgram,
             }],
             trigrams: vec![],
+            phrases: vec![],
         };
         let outcome = lint_text(
             "Voici des exemples concrets.",
@@ -363,7 +393,7 @@ mod tests {
         assert_eq!(outcome.report.flagged_sentence_count, 0);
         assert_eq!(
             outcome.report.document.fingerprint_hits[0].weighted_signal,
-            0.65
+            0.5
         );
     }
 
@@ -373,6 +403,12 @@ mod tests {
             schema_version: 2,
             language: Language::Fr,
             min_documents: 3,
+            min_models: 0,
+            target_model_count: 0,
+            target_label: None,
+            target_model_id: None,
+            target_family: None,
+            lexical_reference: None,
             guard_profile_documents: None,
             min_guard_ratio: None,
             words: vec![],
@@ -384,9 +420,19 @@ mod tests {
                 baseline_frequency: 0.0,
                 ratio: None,
                 target_document_frequency: 8,
+                target_prompt_frequency: 8,
+                model_frequency: 0,
+                family_frequency: 0,
+                model_ids: vec![],
+                families: vec![],
                 guard_frequency: None,
                 guard_ratio: None,
+                reference_frequency: None,
+                reference_ratio: None,
+                discovery_pattern: None,
+                source: crate::fingerprint::FingerprintSource::LiteralNgram,
             }],
+            phrases: vec![],
         };
         let outcome = lint_text(
             "Bien sûr voici trois exemples.",

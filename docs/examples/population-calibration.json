@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "language": "fr",
+  "documents": [
+    { "file": "human-train-001.txt", "class": "human", "split": "train" },
+    { "file": "llm-train-001.txt", "class": "llm", "split": "train" },
+    { "file": "human-test-001.txt", "class": "human", "split": "test" },
+    { "file": "llm-test-001.txt", "class": "llm", "split": "test" }
+  ]
+}
