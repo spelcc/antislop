@@ -1,7 +1,6 @@
-use crate::fingerprint::{Fingerprint, FingerprintEntry};
+use crate::fingerprint::{Fingerprint, FingerprintEntry, FingerprintSource};
 use crate::metrics::{LexicalMetrics, lexical_metrics};
 use crate::tokenize::{Language, content_tokens, tokenize};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -21,6 +20,11 @@ pub struct PatternHit {
     pub count: usize,
     pub ratio: Option<f64>,
     pub signal_class: PatternSignalClass,
+    pub source: FingerprintSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_pattern: Option<String>,
+    pub model_frequency: usize,
+    pub family_frequency: usize,
     pub weighted_signal: f64,
 }
 
@@ -70,7 +74,7 @@ pub fn analyze_text(text: &str, language: Language, fingerprint: Option<&Fingerp
         fingerprint_hits: hits,
         fingerprint_signal_per_1000_tokens: round4(per_1000),
         zero_baseline_occurrences,
-        structural_hits: structural_rules(text, language),
+        structural_hits: crate::structural::structural_rules(text, language),
     }
 }
 
@@ -85,7 +89,16 @@ fn score_fingerprint(
         *words.entry(token.clone()).or_default() += 1;
     }
     counts_by_n.insert(1, words);
-    for n in 2..=3u8 {
+
+    let widths: std::collections::BTreeSet<u8> = fingerprint
+        .bigrams
+        .iter()
+        .chain(&fingerprint.trigrams)
+        .chain(&fingerprint.phrases)
+        .map(|entry| entry.n)
+        .filter(|n| *n >= 2)
+        .collect();
+    for n in widths {
         let width = n as usize;
         let mut counts = HashMap::new();
         if raw_tokens.len() >= width {
@@ -101,38 +114,63 @@ fn score_fingerprint(
         .iter()
         .chain(&fingerprint.bigrams)
         .chain(&fingerprint.trigrams)
-        .filter_map(|entry| hit_for(entry, &counts_by_n))
+        .chain(&fingerprint.phrases)
+        .filter_map(|entry| hit_for(entry, &counts_by_n, fingerprint.schema_version))
         .collect()
 }
 
 fn hit_for(
     entry: &FingerprintEntry,
     counts: &HashMap<u8, HashMap<String, usize>>,
+    fingerprint_schema: u32,
 ) -> Option<PatternHit> {
-    let count = *counts.get(&entry.n)?.get(&entry.pattern)?;
+    let lookup = if entry.n == 1 {
+        entry.pattern.clone()
+    } else {
+        tokenize(&entry.pattern).join(" ")
+    };
+    let count = *counts.get(&entry.n)?.get(&lookup)?;
     let signal_class = if entry.n == 1 {
         PatternSignalClass::Lexical
     } else {
         PatternSignalClass::Phrase
     };
-    let ngram_weight = match entry.n {
-        1 => 0.0,
-        2 => 0.65,
-        3 => 1.0,
-        _ => 0.0,
+    let weight = if entry.n == 1 {
+        if fingerprint_schema >= 4 && entry.source == FingerprintSource::Lexical {
+            0.25
+        } else {
+            0.0
+        }
+    } else {
+        match entry.source {
+            FingerprintSource::Lexical => 0.25,
+            FingerprintSource::RecoveredPhrase => {
+                1.25 + ((entry.n.saturating_sub(3)) as f64 * 0.08).min(0.5)
+            }
+            FingerprintSource::LiteralNgram => match entry.n {
+                2 => 0.5,
+                3 => 1.0,
+                _ => 1.0,
+            },
+        }
     };
-    let ratio_signal = match entry.ratio {
+    let baseline_signal = match entry.ratio {
         Some(ratio) if ratio > 1.0 => ratio.log2().min(6.0),
         Some(_) => 0.0,
-        // Missing from a finite human baseline is evidence, but not infinite evidence.
         None => match entry.n {
-            1 => 0.0,
-            // A missing bigram is weak evidence: ordinary two-word combinations are sparse
-            // even in multi-million-token baselines. Trigram absence is more informative.
+            1 => 1.0,
             2 => 1.0,
-            3 => 2.5,
-            _ => 0.0,
+            _ => 2.5,
         },
+    };
+    let ratio_signal = if fingerprint_schema >= 4 && entry.source == FingerprintSource::Lexical {
+        let reference_signal = entry
+            .reference_ratio
+            .filter(|ratio| *ratio > 1.0)
+            .map_or(0.0, |ratio| ratio.log2().min(6.0));
+        (baseline_signal + reference_signal) / 2.0
+    } else {
+        baseline_signal
     };
     Some(PatternHit {
         pattern: entry.pattern.clone(),
@@ -140,56 +178,12 @@ fn hit_for(
         count,
         ratio: entry.ratio,
         signal_class,
-        weighted_signal: round4(count as f64 * ngram_weight * ratio_signal),
+        source: entry.source,
+        discovery_pattern: entry.discovery_pattern.clone(),
+        model_frequency: entry.model_frequency,
+        family_frequency: entry.family_frequency,
+        weighted_signal: round4(count as f64 * weight * ratio_signal),
     })
-}
-
-fn structural_rules(text: &str, language: Language) -> Vec<StructuralHit> {
-    let patterns: &[(&str, &str)] = match language {
-        Language::En => &[
-            ("not_x_but_y", r"(?i)\bnot\b[^.!?;:]{1,100}\bbut\b"),
-            ("not_only_but", r"(?i)\bnot only\b[^.!?;:]{1,100}\bbut\b"),
-            (
-                "the_real_question",
-                r"(?i)\bthe real (?:question|issue|story)\b",
-            ),
-        ],
-        Language::Fr => &[
-            (
-                "not_x_but_y",
-                r"(?i)\bce n['’]est pas\b[^.!?;:]{1,100}\b(?:c['’]est|mais)\b",
-            ),
-            (
-                "not_only_but",
-                r"(?i)\bpas seulement\b[^.!?;:]{1,100}\bmais\b",
-            ),
-            (
-                "the_real_question",
-                r"(?i)\bla vraie (?:question|histoire)\b|\ble vrai sujet\b",
-            ),
-        ],
-    };
-
-    patterns
-        .iter()
-        .filter_map(|(rule, pattern)| {
-            let regex = Regex::new(pattern).expect("built-in structural regex must compile");
-            let count = regex
-                .find_iter(text)
-                .filter(|matched| {
-                    if *rule != "not_x_but_y" {
-                        return true;
-                    }
-                    let value = matched.as_str().to_lowercase();
-                    !value.contains("not only") && !value.contains("pas seulement")
-                })
-                .count();
-            (count > 0).then(|| StructuralHit {
-                rule: (*rule).to_string(),
-                count,
-            })
-        })
-        .collect()
 }
 
 fn round4(value: f64) -> f64 {
@@ -199,6 +193,22 @@ fn round4(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_fingerprint_unigrams_keep_zero_weight() {
+        let fingerprint: Fingerprint = serde_json::from_str(
+            r#"{
+              "schema_version":3,
+              "language":"fr",
+              "min_documents":3,
+              "words":[{"pattern":"api","n":1,"target_frequency":0.01,"baseline_frequency":0.0,"ratio":null,"target_document_frequency":10}],
+              "bigrams":[],"trigrams":[]
+            }"#,
+        )
+        .unwrap();
+        let analysis = analyze_text("Une API centrale.", Language::Fr, Some(&fingerprint));
+        assert_eq!(analysis.fingerprint_hits[0].weighted_signal, 0.0);
+    }
 
     #[test]
     fn finds_french_false_contrast() {

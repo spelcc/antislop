@@ -90,7 +90,7 @@ antislop lint article.txt --language fr
 antislop lint article.txt --language fr --fingerprint slop-fr.json --json
 ```
 
-Each finding contains the original sentence, sentence index, UTF-8 byte span, start/end line, structural rules and high-confidence fingerprint hits. Unigrams remain document-level diagnostics because single content words are usually topical. Bigrams contribute to the document signal but do not create local warnings by themselves. Local corpus warnings are reserved for trigrams; structural rules remain independent. This makes the JSON suitable for GitHub annotations and editor integrations without turning every technical noun into a red flag.
+Each finding contains the original sentence, sentence index, UTF-8 byte span, start/end line, structural rules and high-confidence fingerprint hits. Unigrams remain document-level diagnostics because single content words are usually topical. Bigrams contribute to the document signal but do not create local warnings by themselves. Local corpus warnings are reserved for trigrams and recovered longer phrases; structural rules remain independent. This makes the JSON suitable for GitHub annotations and editor integrations without turning every technical noun into a red flag.
 
 CI thresholds are opt-in and independent:
 
@@ -120,7 +120,7 @@ The two sides do not need identical word counts because frequencies are normaliz
 
 ## Build corpus profiles
 
-A profile treats each file as one document. Directory inputs are scanned recursively. Schema v2 profiles keep content-filtered unigrams for topic diagnostics, but build bigrams and trigrams from the original normalized token stream so multi-word patterns preserve literal adjacency and function words.
+A profile treats each file as one document. Directory inputs are scanned recursively. Schema v3 corpus profiles keep content-filtered unigrams, literal adjacent bigrams/trigrams, prompt recurrence, optional model metadata, and a second stopword-stripped discovery representation used for exact phrase recovery.
 
 ```bash
 antislop profile corpus/human/ --language fr -o human.json
@@ -171,7 +171,7 @@ antislop analyze article.txt \
   --fingerprint fingerprint.json
 ```
 
-`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. Unigrams are retained as lexical/topic diagnostics with zero slop weight. Bigrams have reduced document-level weight. Trigrams carry the strongest local phrase evidence. Finite ratios are log-scaled and capped; zero-baseline phrase evidence receives a finite conservative weight rather than infinity. Each hit includes its pattern, n-gram width, signal class, occurrence count, ratio and contribution.
+`fingerprint_signal_per_1000_tokens` is a comparison signal, not an AI probability. In schema-v4 fingerprints, French unigrams that survive both the human-baseline and `wordfreq` filters contribute low-weight document evidence but never create local warnings. Legacy schema-v3 unigram scoring remains zero for compatibility. Bigrams have reduced document-level weight. Trigrams and recovered longer phrases carry the strongest local evidence. Finite ratios are log-scaled and capped; zero-baseline phrase evidence receives a finite conservative weight rather than infinity. Each hit includes its pattern, n-gram width, signal class, source, recurrence support, ratio and contribution.
 
 ## Corpus design matters
 
@@ -199,3 +199,36 @@ The original research implementation is available at `sam-paech/slop-forensics`.
 ## License
 
 MIT.
+
+## Model-aware consensus fingerprints
+
+For multi-model generated corpora, prefer a metadata manifest and build one fingerprint per model before deriving a cross-model consensus:
+
+```bash
+antislop profile \
+  --manifest corpus-llm/index.json \
+  --recover-phrases \
+  --language fr \
+  -o llm-fr.profile.json
+
+antislop fingerprint \
+  --target llm-fr.profile.json \
+  --baseline human-fr.profile.json \
+  --guard accepted-author.profile.json \
+  --min-model-documents 2 \
+  --min-models 2 \
+  --models-output-dir model-fingerprints/ \
+  -o slop-fr.json
+```
+
+The profile records `model_id`, inferred/explicit `family`, `prompt_id` and domains. Consensus entries expose model/family support. French lexical candidates are checked against the bundled `wordfreq` large-FR reference; literal n-grams and stopword-stripped discovery n-grams are kept separately; discovery trigrams can recover exact longer surface phrases.
+
+Explore ranked fingerprint similarity with:
+
+```bash
+antislop cluster model-fingerprints/*.json arthur.json \
+  -o cluster.json \
+  --newick-output cluster.nwk
+```
+
+See [`docs/model-consensus-forensics.md`](docs/model-consensus-forensics.md) for methodology, caveats and the fixed holdout before/after benchmark.
