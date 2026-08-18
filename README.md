@@ -250,9 +250,9 @@ On the Compar:IA resource identified by ETag `888b0bccc9a12948985365697653e494` 
 
 Use `--dry-run` to inspect current source availability without writing the corpus. Raw corpus files and generated profiles remain outside Git; only the recipe and builder are versioned.
 
-## Finding the nearest model fingerprint
+## Comparing a document with human and LLM populations
 
-`nearest` ranks a single prose document against a directory of model fingerprints without requiring an external wrapper:
+`nearest` can still rank one document against a directory of model fingerprints:
 
 ```bash
 antislop nearest article.mdoc \
@@ -262,17 +262,72 @@ antislop nearest article.mdoc \
   --top 10
 ```
 
-The default `rank-distance` mode builds a one-document target fingerprint (`min_documents=1`) against the same human baseline, then compares its ordered 120-word / 40-bigram / 40-trigram feature list to each model fingerprint. It also reports the independent document signal for every candidate.
+For a symmetric human/LLM comparison, use a candidate manifest instead. Every population has the same fingerprint representation and may also carry a style profile:
 
-To sort by model-specific patterns actually found in the document instead:
+```json
+{
+  "schema_version": 1,
+  "language": "fr",
+  "candidates": [
+    {
+      "label": "arthur",
+      "class": "human",
+      "fingerprint": "arthur.fingerprint.json",
+      "style_profile": "arthur.style.json"
+    },
+    {
+      "label": "gpt-5.4",
+      "class": "llm",
+      "fingerprint": "gpt-5.4.fingerprint.json",
+      "style_profile": "gpt-5.4.style.json"
+    }
+  ]
+}
+```
+
+Then:
 
 ```bash
 antislop nearest article.mdoc \
-  --baseline human-fr.profile.json \
-  --models-dir fingerprints/models \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
   --language fr \
-  --metric document-signal \
-  --json
+  --metric rank-distance
 ```
 
-`nearest` automatically strips Markdown/MDOC plumbing with the same prose cleaner used by style comparison. Candidate fingerprints must agree on language, `wordfreq` configuration and guard usage; guarded model fingerprints require the matching `--guard` profile. The output is descriptive fingerprint proximity, **not model attribution or an authorship probability**.
+Three independent rankings are exposed:
+
+- `rank-distance`: similarity between ordered 120-word / 40-bigram / 40-trigram fingerprints, lower is closer;
+- `document-signal`: candidate-specific over-represented patterns actually present in the document, higher is stronger;
+- `style-distance`: topic-light sentence rhythm, punctuation, pronouns, function words and sentence starters, lower is closer.
+
+Candidate fingerprints must use the same language, fingerprint schema, recurrence threshold, lexical reference and guard configuration. `nearest` automatically strips Markdown/MDOC plumbing. The ranking remains descriptive similarity, not authorship attribution.
+
+## Calibrated human-vs-LLM classification
+
+A probability should not be invented from ranks. `calibrate` instead fits a deterministic balanced logistic regression from labeled documents that are separate from the candidate fingerprints:
+
+```bash
+antislop calibrate \
+  --documents calibration.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr \
+  -o classifier.json
+```
+
+The calibration manifest explicitly marks `train` and `test` documents. The classifier uses five auditable features: best human-vs-LLM distance margin, signal margin, style margin, LLM fraction in the five nearest rank-distance candidates, and LLM fraction in the five strongest document-signal candidates.
+
+Apply it with:
+
+```bash
+antislop classify article.mdoc \
+  --classifier classifier.json \
+  --baseline human-train.profile.json \
+  --candidates candidates.json \
+  --language fr
+```
+
+`classify` reports Human/LLM probabilities, holdout accuracy/AUC/Brier/ECE, the best human and LLM evidence on each axis, and each feature's contribution to the logistic score. The fitted prior is deliberately **50% Human / 50% LLM**. A result such as `Human 70%` therefore means “70% under this calibrated balanced comparison,” not “70% real-world probability that a human wrote it.”
+
+The current leakage-free French benchmark uses 34 populations (6 human corpora + 28 Compar:IA models), 280 calibration-train documents and 280 independent test documents. It reaches **96.8% accuracy, ROC AUC 0.9947, Brier 0.0253 and ECE 0.0568**. See [`docs/population-classification.md`](docs/population-classification.md) for the exact split, source-level results and caveats.

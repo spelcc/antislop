@@ -378,11 +378,10 @@ fn compare(
     min_wordfreq_ratio: f64,
     source: FingerprintSource,
 ) -> Vec<FingerprintEntry> {
-    let keys: BTreeSet<_> = target.keys().chain(baseline.keys()).cloned().collect();
-    let mut entries: Vec<_> = keys
-        .into_iter()
-        .filter_map(|pattern| {
-            let target_stats = target.get(&pattern)?;
+    let mut entries: Vec<_> = target
+        .iter()
+        .filter_map(|(pattern, target_stats)| {
+            let pattern = pattern.clone();
             let recurrence = if target_stats.prompt_frequency > 0 {
                 target_stats.prompt_frequency
             } else {

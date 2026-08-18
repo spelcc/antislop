@@ -2,6 +2,7 @@ use crate::analyze::analyze_text;
 use crate::cluster::normalized_rank_distance;
 use crate::fingerprint::{Fingerprint, FingerprintOptions, build_fingerprint_suite};
 use crate::profile::{CorpusProfile, profile_documents};
+use crate::style::{StyleProfile, compare_style_document, style_metrics};
 use crate::tokenize::Language;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -12,11 +13,28 @@ use std::path::{Path, PathBuf};
 pub enum NearestMetric {
     RankDistance,
     DocumentSignal,
+    StyleDistance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateClass {
+    Human,
+    Llm,
+}
+
+#[derive(Debug, Clone)]
+pub struct NearestCandidate {
+    pub label: String,
+    pub class: CandidateClass,
+    pub fingerprint: Fingerprint,
+    pub style_profile: Option<StyleProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NearestMatch {
     pub label: String,
+    pub class: CandidateClass,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25,6 +43,10 @@ pub struct NearestMatch {
     pub rank_distance_position: usize,
     pub document_signal_per_1000_tokens: f64,
     pub document_signal_position: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_distance: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_distance_position: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,9 +59,103 @@ pub struct NearestReport {
     pub matches: Vec<NearestMatch>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CandidateManifest {
+    #[serde(default)]
+    language: Option<Language>,
+    candidates: Vec<CandidateManifestEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CandidateManifestEntry {
+    label: String,
+    class: CandidateClass,
+    fingerprint: String,
+    #[serde(default)]
+    style_profile: Option<String>,
+}
+
+pub fn load_candidate_manifest(
+    path: &Path,
+    language: Language,
+) -> Result<BTreeMap<String, NearestCandidate>, String> {
+    let raw = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "failed to read candidate manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    let manifest: CandidateManifest = serde_json::from_str(&raw)
+        .map_err(|error| format!("invalid candidate manifest {}: {error}", path.display()))?;
+    if let Some(manifest_language) = manifest.language
+        && manifest_language != language
+    {
+        return Err(format!(
+            "candidate manifest language {:?} does not match {:?}",
+            manifest_language, language
+        ));
+    }
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut output = BTreeMap::new();
+    for entry in manifest.candidates {
+        let fingerprint_path = resolve_relative(base, &entry.fingerprint);
+        let fingerprint: Fingerprint = read_json_file(&fingerprint_path, "fingerprint")?;
+        if fingerprint.language != language {
+            return Err(format!(
+                "candidate {} fingerprint uses {:?}, expected {:?}",
+                entry.label, fingerprint.language, language
+            ));
+        }
+        let style_profile = entry
+            .style_profile
+            .as_deref()
+            .map(|value| {
+                let profile_path = resolve_relative(base, value);
+                let profile: StyleProfile = read_json_file(&profile_path, "style profile")?;
+                if profile.language != language {
+                    return Err(format!(
+                        "candidate {} style profile uses {:?}, expected {:?}",
+                        entry.label, profile.language, language
+                    ));
+                }
+                Ok(profile)
+            })
+            .transpose()?;
+        let candidate = NearestCandidate {
+            label: entry.label.clone(),
+            class: entry.class,
+            fingerprint,
+            style_profile,
+        };
+        if output.insert(entry.label.clone(), candidate).is_some() {
+            return Err(format!("duplicate candidate label: {}", entry.label));
+        }
+    }
+    if output.is_empty() {
+        return Err("candidate manifest contains no candidates".into());
+    }
+    Ok(output)
+}
+
+fn resolve_relative(base: &Path, value: &str) -> PathBuf {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path, kind: &str) -> Result<T, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {kind} {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("invalid {kind} {}: {error}", path.display()))
+}
+
 pub fn load_fingerprint_directory(
     directory: &Path,
-) -> Result<BTreeMap<String, Fingerprint>, String> {
+) -> Result<BTreeMap<String, NearestCandidate>, String> {
     if !directory.is_dir() {
         return Err(format!(
             "models directory not found: {}",
@@ -71,7 +187,13 @@ pub fn load_fingerprint_directory(
                     .unwrap_or("fingerprint")
                     .to_string()
             });
-        if fingerprints.insert(label.clone(), fingerprint).is_some() {
+        let candidate = NearestCandidate {
+            label: label.clone(),
+            class: CandidateClass::Llm,
+            fingerprint,
+            style_profile: None,
+        };
+        if fingerprints.insert(label.clone(), candidate).is_some() {
             return Err(format!("duplicate model fingerprint label: {label}"));
         }
     }
@@ -99,7 +221,33 @@ pub fn nearest_fingerprints(
     language: Language,
     baseline: &CorpusProfile,
     guard: Option<&CorpusProfile>,
-    candidates: &BTreeMap<String, Fingerprint>,
+    fingerprints: &BTreeMap<String, Fingerprint>,
+    metric: NearestMetric,
+    top: usize,
+) -> Result<NearestReport, String> {
+    let candidates = fingerprints
+        .iter()
+        .map(|(label, fingerprint)| {
+            (
+                label.clone(),
+                NearestCandidate {
+                    label: label.clone(),
+                    class: CandidateClass::Llm,
+                    fingerprint: fingerprint.clone(),
+                    style_profile: None,
+                },
+            )
+        })
+        .collect();
+    nearest_candidates(text, language, baseline, guard, &candidates, metric, top)
+}
+
+pub fn nearest_candidates(
+    text: &str,
+    language: Language,
+    baseline: &CorpusProfile,
+    guard: Option<&CorpusProfile>,
+    candidates: &BTreeMap<String, NearestCandidate>,
     metric: NearestMetric,
     top: usize,
 ) -> Result<NearestReport, String> {
@@ -118,16 +266,28 @@ pub fn nearest_fingerprints(
         .values()
         .next()
         .expect("non-empty candidates checked above");
-    let uses_wordfreq = first.lexical_reference.is_some();
-    let uses_guard = first.guard_profile_documents.is_some();
-    for (label, fingerprint) in candidates {
+    let uses_wordfreq = first.fingerprint.lexical_reference.is_some();
+    let uses_guard = first.fingerprint.guard_profile_documents.is_some();
+    let reference = &first.fingerprint.lexical_reference;
+    let candidate_schema = first.fingerprint.schema_version;
+    let candidate_min_documents = first.fingerprint.min_documents;
+    for (label, candidate) in candidates {
+        let fingerprint = &candidate.fingerprint;
         if fingerprint.language != language {
             return Err(format!(
                 "candidate fingerprint {label} uses {:?}, expected {:?}",
                 fingerprint.language, language
             ));
         }
-        if fingerprint.lexical_reference.is_some() != uses_wordfreq {
+        if fingerprint.schema_version != candidate_schema {
+            return Err("candidate fingerprints disagree on schema version".into());
+        }
+        if fingerprint.min_documents != candidate_min_documents {
+            return Err(
+                "candidate fingerprints disagree on recurrence threshold (min_documents)".into(),
+            );
+        }
+        if &fingerprint.lexical_reference != reference {
             return Err(
                 "candidate fingerprints disagree on lexical reference configuration".into(),
             );
@@ -162,7 +322,7 @@ pub fn nearest_fingerprints(
             bigram_limit: 40,
             trigram_limit: 40,
             phrase_limit: 0,
-            min_guard_ratio: first.min_guard_ratio.unwrap_or(2.0),
+            min_guard_ratio: first.fingerprint.min_guard_ratio.unwrap_or(2.0),
             use_wordfreq: uses_wordfreq,
             ..Default::default()
         },
@@ -170,21 +330,35 @@ pub fn nearest_fingerprints(
     )?
     .consensus;
 
+    let target_style = style_metrics(text, language);
     let mut matches: Vec<_> = candidates
         .iter()
-        .map(|(label, fingerprint)| {
+        .map(|(label, candidate)| {
+            let fingerprint = &candidate.fingerprint;
             let analysis = analyze_text(text, language, Some(fingerprint));
             NearestMatch {
                 label: label.clone(),
+                class: candidate.class,
                 model_id: fingerprint.target_model_id.clone(),
                 family: fingerprint.target_family.clone(),
                 rank_distance: normalized_rank_distance(&target_fingerprint, fingerprint),
                 rank_distance_position: 0,
                 document_signal_per_1000_tokens: analysis.fingerprint_signal_per_1000_tokens,
                 document_signal_position: 0,
+                style_distance: candidate
+                    .style_profile
+                    .as_ref()
+                    .map(|profile| compare_style_document(&target_style, profile).overall_distance),
+                style_distance_position: None,
             }
         })
         .collect();
+
+    if metric == NearestMetric::StyleDistance
+        && !matches.iter().any(|entry| entry.style_distance.is_some())
+    {
+        return Err("style-distance requires at least one candidate style profile".into());
+    }
 
     let mut distance_order: Vec<_> = (0..matches.len()).collect();
     distance_order.sort_by(|&left, &right| {
@@ -208,6 +382,20 @@ pub fn nearest_fingerprints(
         matches[index].document_signal_position = position + 1;
     }
 
+    let mut style_order: Vec<_> = (0..matches.len())
+        .filter(|&index| matches[index].style_distance.is_some())
+        .collect();
+    style_order.sort_by(|&left, &right| {
+        matches[left]
+            .style_distance
+            .unwrap_or(f64::INFINITY)
+            .total_cmp(&matches[right].style_distance.unwrap_or(f64::INFINITY))
+            .then_with(|| matches[left].label.cmp(&matches[right].label))
+    });
+    for (position, index) in style_order.into_iter().enumerate() {
+        matches[index].style_distance_position = Some(position + 1);
+    }
+
     match metric {
         NearestMetric::RankDistance => matches.sort_by(|left, right| {
             left.rank_distance_position
@@ -216,6 +404,11 @@ pub fn nearest_fingerprints(
         NearestMetric::DocumentSignal => matches.sort_by(|left, right| {
             left.document_signal_position
                 .cmp(&right.document_signal_position)
+        }),
+        NearestMetric::StyleDistance => matches.sort_by(|left, right| {
+            left.style_distance_position
+                .unwrap_or(usize::MAX)
+                .cmp(&right.style_distance_position.unwrap_or(usize::MAX))
         }),
     }
     matches.truncate(top.min(matches.len()));
@@ -226,6 +419,7 @@ pub fn nearest_fingerprints(
         metric: match metric {
             NearestMetric::RankDistance => "rank_distance",
             NearestMetric::DocumentSignal => "document_signal",
+            NearestMetric::StyleDistance => "style_distance",
         }
         .to_string(),
         candidate_count: candidates.len(),

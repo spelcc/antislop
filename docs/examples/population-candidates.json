@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "language": "fr",
+  "candidates": [
+    {
+      "label": "human-editorial",
+      "class": "human",
+      "fingerprint": "human-editorial.fingerprint.json",
+      "style_profile": "human-editorial.style.json"
+    },
+    {
+      "label": "example-model",
+      "class": "llm",
+      "fingerprint": "example-model.fingerprint.json",
+      "style_profile": "example-model.style.json"
+    }
+  ]
+}
